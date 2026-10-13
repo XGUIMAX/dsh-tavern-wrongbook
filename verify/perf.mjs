@@ -37,7 +37,7 @@ for (let i = 0; i < CARD_COUNT / 2; i += 1) {
 }
 
 process.env.DSH_TAVERN_DATA = SANDBOX
-const mod = await import('file:///C:/Users/213123543/.dsh/plugins/dsh-wrongbook/lib/index.js')
+const mod = await import('file:///C:/Users/213123543/.dsh/plugins/dsh-tavern-wrongbook/lib/index.js')
 
 const routes = []
 const tools = []

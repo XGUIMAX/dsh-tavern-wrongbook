@@ -6,8 +6,13 @@
 //
 // 后两个都在 Tavern 插件接口里（tavernUi），按需取、不写进 export const inject：
 // 那里是硬依赖，缺一个整个浏览器半就不 apply，而 Tavern 是可选装的东西。
+// The registration id MUST equal the package name (`package.json` name). The DSH
+// client module system indexes graph rows by package name and its `arrive()` step
+// throws "bundle ... loaded without registering \"<package name>\" via
+// __ModuleLoader__.load" when the script registers under anything else, so an id
+// that drifts from the package name fails the whole plugin at boot.
 window.__ModuleLoader__.load({
-  id: 'dsh-wrongbook',
+  id: 'dsh-tavern-wrongbook',
   factory: (require) => {
     const react = require('react')
     const h = react.createElement
@@ -950,7 +955,7 @@ window.__ModuleLoader__.load({
     /* dsh-peer-link —— 对端插件状态按钮：对方宿主半在跑就显示绿点，否则红点并可点击前往仓库下载。 */
     const PEER = {
       base: '/dsh-card-updater',
-      url: 'https://github.com/XGUIMAX/dsh-card-updater',
+      url: 'https://github.com/XGUIMAX/dsh-tavern-card-updater',
       name: '卡片更新器',
     }
     function PeerLink() {
@@ -1196,6 +1201,57 @@ window.__ModuleLoader__.load({
       return t('stale.any')
     }
 
+    /**
+     * 一条底稿的正文（现象 / 原因 / 修法 / 出处 / 证据）。
+     *
+     * 折叠仍旧用原生 `<details>`，但**内容不预先渲染**：一条底稿的正文平均 5 KB
+     * （证据那一栏还带着抓取时一并存下的上文），几百条加起来能到 1 MB 以上，而原生
+     * 折叠只是"不显示" —— 节点照样在 DOM 里。整个面板打开那一下，时间基本全花在
+     * 这里。改成点开过一次才挂内容，收起也不卸载（免得来回闪）。
+     *
+     * 监听写在 `summary` 的点击上，而不是 `details` 的 `toggle`：toggle 事件不冒泡，
+     * React 对它的支持随版本而变；而点 summary 一定会走到这里，键盘也一样
+     * （Enter / 空格在 summary 上本来就是点击行为）。
+     */
+    function EntryDetail({ entry, card, open }) {
+      // `open` 只是给验证留的入口：详情是惰性挂载的，而验证要检查这些文字就绕不过
+      // "先展开"这一步，它又没有真 DOM 可以点。
+      const [opened, setOpened] = useState(!!open)
+      return h(
+        'details',
+        { className: 'dwb-details' },
+        h('summary', { onClick: () => setOpened(true) }, t('sec.detail')),
+        opened ? h('dl', { className: 'dwb-kv' }, detailRows(entry, card)) : null,
+      )
+    }
+
+    /**
+     * 详情里的每一行。
+     *
+     * 单独一个函数是为了让验证还能检查这些文字 —— 详情现在是惰性挂载的，从整页渲染
+     * 的结果里再也看不到它们（见上面 EntryDetail 那段）。
+     */
+    function detailRows(entry, card) {
+      return [
+        entry.symptom ? h(Fragment, null, h('dt', null, t('field.symptom')), h('dd', null, entry.symptom)) : null,
+        entry.cause ? h(Fragment, null, h('dt', null, t('field.cause')), h('dd', null, entry.cause)) : null,
+        entry.fix ? h(Fragment, null, h('dt', null, t('field.fix')), h('dd', null, entry.fix)) : null,
+        entry.refs ? h(Fragment, null, h('dt', null, t('field.refs')), h('dd', null, entry.refs)) : null,
+        // 标脏的原因写在详情里：角标只说"失效了"，这里说清是哪一轮、怎么变的。
+        entry.stale
+          ? h(
+              Fragment,
+              null,
+              h('dt', null, t('stale.badge')),
+              h('dd', null, `${staleText(entry.stale)} ${t('stale.note')}`),
+            )
+          : null,
+        entry.evidence ? h(Fragment, null, h('dt', null, t('field.evidence')), h('dd', null, entry.evidence)) : null,
+        h('dt', null, t('label.card')),
+        h('dd', null, card ? card.name : entry.cardKey),
+      ]
+    }
+
     function EntryView({ entry, cards, pending, setPending, onEdit, onDelete, onCopy, onStatus, onClearStale }) {
       const card = cards.find((c) => c.key === entry.cardKey)
       const pair = card && card.pairKey ? cards.find((c) => c.key === card.pairKey) : null
@@ -1255,26 +1311,7 @@ window.__ModuleLoader__.load({
             onConfirm: () => onDelete(entry),
           }),
         ),
-        h(
-          'details',
-          { className: 'dwb-details' },
-          h('summary', null, t('sec.detail')),
-          h(
-            'dl',
-            { className: 'dwb-kv' },
-            entry.symptom ? h(Fragment, null, h('dt', null, t('field.symptom')), h('dd', null, entry.symptom)) : null,
-            entry.cause ? h(Fragment, null, h('dt', null, t('field.cause')), h('dd', null, entry.cause)) : null,
-            entry.fix ? h(Fragment, null, h('dt', null, t('field.fix')), h('dd', null, entry.fix)) : null,
-            entry.refs ? h(Fragment, null, h('dt', null, t('field.refs')), h('dd', null, entry.refs)) : null,
-            // 标脏的原因写在详情里：角标只说"失效了"，这里说清是哪一轮、怎么变的。
-            entry.stale
-              ? h(Fragment, null, h('dt', null, t('stale.badge')), h('dd', null, `${staleText(entry.stale)} ${t('stale.note')}`))
-              : null,
-            entry.evidence ? h(Fragment, null, h('dt', null, t('field.evidence')), h('dd', null, entry.evidence)) : null,
-            h('dt', null, t('label.card')),
-            h('dd', null, card ? card.name : entry.cardKey),
-          ),
-        ),
+        h(EntryDetail, { entry, card }),
       )
     }
 
@@ -4279,7 +4316,17 @@ const [importOpen, setImportOpen] = useState(false)
               const got = await apiPost({ action: 'captureTurn', gameId, turn })
               if (!got || got.ok === false) throw new Error((got && got.error) || '读不到这一轮的正文')
               const text = String(got.turn.text || '').trim()
-              const cardName = String((got.turn.card && got.turn.card.name) || '').trim()
+              // 归类用 Tavern 给的卡位置（`cards/x.json`），不用卡名：原版卡和它的
+              // MVU 版卡名通常一模一样，按名字会被判成「对上了两个分类」而拒绝记录，
+              // 位置则只有一条能对上。名字留着兜底 —— 老版本 Tavern 不给 id。
+              const card = got.turn.card || {}
+              const cardId = String(card.id || '').trim()
+              const cardName = String(card.name || '').trim()
+              // 上文单独进「证据」那一栏，不挤「现象」：现象是当轮原文，写描述时要
+              // 照着它看，混进别的轮次只会让它更难读。
+              const before = (Array.isArray(got.before) ? got.before : [])
+                .map((row) => `【上文 · 第 ${row.turn} 轮】\n${row.text}`)
+                .join('\n\n')
               // 标题先按"第几轮 + 正文开头"起一个，够在列表里认出是哪一条；现象放正文
               // 开头一段，具体描述留给面板里补 —— 记录时人在游玩，不该被要求当场把话
               // 组织好，否则就又变成"等有空再说"。
@@ -4287,11 +4334,12 @@ const [importOpen, setImportOpen] = useState(false)
               const title = `第 ${turn} 轮：${head}`
               const made = await apiPost({
                 action: 'addEntry',
-                // 卡名对得上哪个分类就用哪个；对不上时宿主会自己建一个分类。
-                cardKey: cardName,
+                // 位置对得上哪个分类就用哪个；对不上时宿主会自己建一个分类。
+                cardKey: cardId || cardName,
                 entry: {
                   title,
                   symptom: text.slice(0, 2000),
+                  evidence: before,
                   refs: `第 ${turn} 轮 · ${gameId}`,
                   status: 'open',
                   // 出处另存一份结构化的：refs 那行是给人读的，这一份是给「来源失效」
@@ -4354,6 +4402,6 @@ const [importOpen, setImportOpen] = useState(false)
 
     }
 
-    return { name: 'dsh-wrongbook', inject: ['slots', 'locale'], apply }
+    return { name: 'dsh-tavern-wrongbook', inject: ['slots', 'locale'], apply }
   },
 })

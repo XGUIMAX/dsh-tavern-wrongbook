@@ -71,9 +71,13 @@ node debug/patch-all.mjs --apply  # 缺的自动重打
 | 顺序 | 脚本 | 改哪里 |
 | --- | --- | --- |
 | **1** | `patch-src.mjs` | `src/client/main.js` + `src/client/opening-preview.js`（**九处**） |
+| **1-b** | `patch-reasoning-notice.mjs` | `src/client/main.js` —— 思考通道轮次的界面标注（**必须在 build 之前**，和源码补丁同一批） |
 | **2** | `bin/build-tavern-client.mjs` | 重建 `lib/client.js` —— **会覆盖 `lib/` 上的一切直接注入** |
 | **3** | `patch.mjs` | `lib/domain/tavern-helper-scripts.js` |
 | **4** | `patch-test.mjs` | `lib/domain/card-response-test.js` |
+| **5** | `patch-reasoning-fallback.mjs` | `lib/index.js` —— 思考通道兜底（正文空时用思考内容续走）+ 会话消息声明来源 + 替换坐标修正（**五处**） |
+
+**1 和 1-b 都改 `src/`，所以都必须在 build 之前跑完。** `patch-all.mjs` 已经这么排：任一 src 类补丁需要应用，就跑完它们再 build（`SRC_IDS`）。单独跑 1-b 只改源码，不 build 不生效。
 
 **创意工坊的域名例外已经并入 `patch-src.mjs`（⑦⑧）**，不再单独跑 —— 它原来改 `lib/client.js`，让 `check:client` 永远报"已过期"（src 有改动、lib 多出源码里没有的东西，两者必然对不上）。**别再去跑 `workshop-direct/patch.mjs`**，那样会把状态弄回不一致。
 
@@ -86,11 +90,13 @@ node debug/patch-all.mjs --apply  # 缺的自动重打
 | `workshop-direct/patch.mjs` | `lib/client.js` | 创意工坊域名直连（否则 Build / 人设 / 拓展 / 世界书 都是空的） |
 | `patch.mjs` | `domain/tavern-helper-scripts.js` | 放开 MVU 卡（卡内无脚本的）的纯 API 测试 |
 | `patch-test.mjs` | `domain/card-response-test.js` | 超时记录里保留前台正文 |
+| `patch-reasoning-notice.mjs` | `src/client/main.js`（**源码，需 build**） | 整条消息只有思考块（没有非空 `text` 块）时，把折叠标题写成「思考过程（本轮没有正文：以下为模型的思考内容）」并**默认展开**。内容一字不动，只是不再让思考草稿冒充成品回答。**这是唯一能改变"用户看到的东西"的位置** —— 原因见下节 |
+| `patch-reasoning-fallback.mjs` | `lib/index.js` | 正文为空、思考通道有内容时，用思考内容续走 `finalize` —— 不再判本轮失败并抛错。**判据是"内容有没有生成"，而不是"它写在哪个通道"**；并把会话消息整条替换为「来源声明 + 正文」（⑩-b），同时修正替换坐标（⑩-c：原先用 events 下标当 seq，路径一直空转）。五处可分别增量补齐，`--revert` 按状态反向撤 |
 | `patch-card-generate.mjs` | **卡内脚本** | 给龙娘回廊补 `generate` 并适配宿主的 `ordered_prompts` 契约；**不受升级影响**。判据是"接管 + 自有标记"（`__dshNormalized`），不是"存在就不管" —— 见下节 |
 | ~~`patch-frame-helper.mjs`~~ | ~~`lib/client.js`~~ | **已退役** —— 六处补丁住进 `src/` 后由 build 带进 `lib/`，它的旧标记检测会误报「只打了一半」，属正常，别去"修" |
 | ~~`workshop-direct/patch.mjs`~~ | ~~`lib/client.js`~~ | **已退役** —— 域名例外并入 `patch-src.mjs` 的 ⑦⑧。跑它会让 `check:client` 重新报"已过期" |
 
-### 三条已经踩过的坑（都是"看起来正常"的那种）
+### 四条已经踩过的坑（都是"看起来正常"的那种）
 
 **① 用旧备份整体覆盖 → 把宿主升级一起回滚了。**
 
@@ -117,6 +123,102 @@ grep -c "^\s*//\s*@include" src/client/main.js   # 40 → 38（只少 ⑨ 那两
 **现在的判据**：数量跟着 `checks.length` 走；另外两条有判别力的断言 —— **产物里查升级带进来的符号**（缺文件产生合法 JS，构建和语法都过）、**`include` 总数基线 40**（掉下来就说明被旧备份覆盖过）。
 
 **注意判据要分形态**：`@include` 是构建时**展开**的，产物里搜不到那行文本 —— 源码列查指令、产物列查展开后的符号。**写成一样会在正常的树上报失败**，而人倾向于相信断言，于是去改本来对的东西。
+
+**④ 把"内容走错通道"当成"内容不存在" → 明明生成了，整轮被判失败。**
+
+模型偶尔把整段回答写进 reasoning 通道，`text` 通道为空。宿主的判据是：
+
+```js
+reasoningOnly: text === '' && reasoningText !== ''   // lib/domain/session-turn-result.js:36
+```
+
+而 `lib/index.js` 据此 `recordFailure` + **`throw`** —— 跟在后面的这两行**都不会执行**：
+
+```js
+const saved = await foregroundHandoff.finalize({ ... })
+if (saved.reply) replaceAssistantReply(session, assistant, saved.reply.sessionText)
+```
+
+于是正文不进存档交接、展示管线（正则 / MVU 美化）不跑、状态栏挂一条"本轮运行失败"的红字 —— **可界面上明明已经把那段内容显示出来了**。
+
+该问的判据是**内容有没有生成**，而不是**它写在哪个通道**。`patch-reasoning-fallback.mjs` 在正文空而思考通道有内容时用 `reasoningText` 续走 `finalize`，只留一行 `warn` 供追溯；真正一个字都没有时，原报错分支原样保留。
+
+**兜底 ≠ 观感正确（⑩-b，2026-09-27 追加）。** 只兜底的时候，用户反馈还是"又截断了"——因为只兜底时界面显示的仍是那条**只有 `reasoning` 块、没有 `text` 块**的消息（`content kinds=["reasoning"]`），而模型 `stop` 时 reasoning 里本来就是半成品，看着就像说到一半停住。用户原话：*"思考过程被当成了回复显示，然后又截断了。"*
+
+⑩-b 把兜底轮次的会话消息整条替换成「来源声明 + 正文」，正文一个字不动。
+
+**⑩-c 真因：两处叠加，而且第一处根本不在这段代码里。**
+
+**① 前置条件在卡片模式下恒假（真正的病因）。** 原来写的是 `if (saved.reply) replaceAssistantReply(...)`，而 `finalize` 在**卡片模式**下两条返回路径**都没有 `reply` 字段**：
+
+```js
+// lib/domain/turn-orchestration.js
+if (mode === 'card' && cardPath === '') { ... return { saved:true, mode, changed, chatId, cardName, createdCard } }   // 无 reply
+if (mode === 'card')                   { ... return { saved:true, mode, changed, chatId, cardName } }                  // 无 reply
+// 只有 story / script 那条路才 return { ..., reply }
+```
+
+**而用户一直在卡片工作台里测** —— 所以那次替换从来没有被调用过，跟坐标对不对无关。
+
+**② 坐标也确实错了（即便调用也会抛）。** `replaceAssistantReply` 传的 `start` / `sourceEventSeqs` 是 `assistantResultForTurn()` 返回的 **events 数组下标**，而 `replaceSessionSurface` 要的是 **事件 seq**。注意字段名不是问题：`appendSessionEvent()` 会把 `{start, end}` 规范化成 DSH 原生形态 `{op:'replace', startSeq, endSeq}`，`surfaceReplacementRange()` 也兼容两种读法 —— 所以只要值给对（seq），写进去就是对的。
+
+修法：**兜底轮次直接调 `replaceSessionSurface`，不经过 `replaceAssistantReply`，也不依赖 `saved.reply`**；坐标取 `assistant.event.seq`；外面包 `try/catch`，并把结果写回 `recordFailure` 的 message（`会话消息替换成功 / 替换失败：<原因>`），这样 journal 里直接能看到替换有没有落地：
+
+```js
+if (assistant !== null && assistant.text === '' && assistantText !== '') {
+  const fallbackBody = saved.reply?.sessionText ?? assistantText
+  const seqOfFallback = Number.isSafeInteger(assistant.event?.seq) ? assistant.event.seq : assistant.index
+  try {
+    replaceSessionSurface(session, 'assistant/message', {
+      turn: Number(assistant.event?.data?.turn) || payload.turn,
+      step: Number(assistant.event?.data?.step) || 1,
+      message: { ...assistant.event.data.message, id: randomUUID(),
+        source: { kind: 'model', provider: 'dsh-tavern', model: 'reply-projection' },
+        content: [{ type: 'text', text: NOTICE + '\n\n' + fallbackBody }] }
+    }, { start: seqOfFallback, end: seqOfFallback, sourceEventSeqs: [seqOfFallback] })
+  } catch (error) { /* 记进 message，不影响存档 */ }
+}
+```
+
+**判据（实测，不是推断）**：会话日志 `sessions/<sessionId>/session.v3.jsonl.zstd` 里 `"model":"reply-projection"` 出现 **0 次**，`surfaceOp.op` 分布是 `{append: 4351, replace: 37}` —— 那 37 次 replace **全是 DSH 自己的**（system / tool/result），Tavern 一次都没有。**"补丁在文件里"与"这条路径会被走到"是两件事**：要去找它本该产生的痕迹，不是看状态脚本。
+
+**教训顺序**：先确认调用点会不会执行（前置条件在当前模式下成立吗），再谈坐标和逻辑对不对 —— 反过来查，会花两轮修一个根本没被执行的函数的内部细节。
+
+**判据要跟着改动数量走**：`stateOf` 现在按五处逐项报 `[ ok ] / [ -- ] / [ !! ]`，缺哪补哪（历史中间状态可增量补齐），`--revert` 只反向撤"确实已应用"的那几处。写判据时踩到两个坑，都值得记住：
+
+- **不能用 `to` 当"已应用"判据** —— B 的 `to`（`      assistantText`）是它自己 `from` 的前缀，两边都命中，判据直接失效。每处要另配一个"补丁后专有"的 done 标记。
+- **锚点必须跨到插入点之后的一行** —— 否则补丁后原锚点仍在（它是新文本的前缀），状态永远认不出来。
+
+**⚠ 但这套替换对用户不可见 —— 这是 DSH 的有意设计，不是 bug（2026-09-27 实测结论）。**
+
+⑩-c 落地后数据层完全正确（`surfaceOp=replace` 指向原节点、`content` 从 `["reasoning"]` 变成 `["text"]`、发生在 `turn/end` 之前、journal 回执写「会话消息替换成功」），**可界面上还是一个样**。原因写在 DSH 前端源码里：
+
+```js
+// @deepseek-ai/dsh-client-ui-chat/lib/client.js:5686-5698
+// Narrow an event to an append-origin surface event: one that entered the surface
+// at its own log position and was never itself a replacement copy.
+//
+// The model-visible surface deliberately shadows replaced ranges, so it is the
+// wrong source for a human transcript — a landed replacement would erase
+// conversation the user already saw. Append-origin events are that transcript's
+// durable source material; replacement copies stay model-only.
+```
+
+即：**替换只改"模型看到的 surface"，人类转录只认 `surfaceOp === "append"` 的事件**（`hasTextAssistant` / `visibleAssistantEvent` 都硬要求 append）。一个已落地的替换若也改写用户看过的对话，就等于抹掉他刚看过的内容 —— DSH 明确不这么做。
+
+**所以：想改变"用户看到的东西"，只能在渲染层做 → 这就是 `patch-reasoning-notice.mjs`（⑪）存在的理由。** 判断一条修改属于哪一层，先问"用户看到的这份数据是从哪来的"。
+
+**留一句话给后来的自己**：⑩-b/⑩-c 不是白做的 —— 它让**模型**在下一轮看到「这段内容来自思考通道」的声明（模型可见的那份 surface 被正确更新了），避免模型把思考草稿当正文继续写。但它永远不会出现在用户眼前。
+
+实测规模（`chat-muean70p-ichmxt`，2026-09-27）：
+
+```
+09-24  stop  n=17  emptyLen=0     ← 正常
+09-26  stop  n=40  emptyLen=0     ← 正常
+09-27  stop  n=58  emptyLen=17    ← 29%，且成簇发作
+```
+
+**成簇**是这条的关键指纹：02:xx 全成功、14:13–14:20 连空 5 次、20:36 成功两次、20:57–21:09 又连空 7 次 —— 同一天里自相矛盾，所以**别拿它当配置问题去改提示词**（9/24、9/26 用的就是同一份提示词，收尾全部正常）。查这类"时好时坏"的故障，先按时间轴分簇，簇内的共同点才是嫌疑对象。
 
 ### 三处 `generate` 包装必须一致
 

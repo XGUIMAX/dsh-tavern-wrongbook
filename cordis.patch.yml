@@ -1,5 +1,5 @@
-# dsh-wrongbook bundle patch: inserts the plugin into a profile's layer stack.
+# dsh-tavern-wrongbook bundle patch: inserts the plugin into a profile's layer stack.
 # Remove this entry (or the plugin row in the profile's dsh.profile.bundles) to detach it.
 - insert:
-    - id: dsh-wrongbook
-      name: 'dsh-wrongbook'
+    - id: dsh-tavern-wrongbook
+      name: 'dsh-tavern-wrongbook'

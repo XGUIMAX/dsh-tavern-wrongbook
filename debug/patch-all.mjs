@@ -1,4 +1,4 @@
-﻿// DSH 升级后一键重打所有宿主补丁。
+// DSH 升级后一键重打所有宿主补丁。
 //
 // 为什么需要它：宿主补丁改的是 apps/dsh-tavern/ 下的文件（src/ 与 lib/），
 // 而 DSH 升级是整份替换 —— 补丁会静默失效，不报错，只是功能悄悄回到补丁前。
@@ -12,7 +12,8 @@
 //   1) patch-src        改 src/client/*.js        —— 源码
 //   2) build:client     用 src 重建 lib/client.js —— 会覆盖 lib 上的一切直接改动
 //   3) workshop-direct  改 lib/client.js          —— 必须在 build 之后
-//   4) patch / patch-test  改 lib/domain/*.js     —— 不受 build 影响，放最后更稳
+//   4) patch / patch-test / reasoning-fallback   —— 改 lib/domain/*.js 与 lib/index.js
+//                                                 —— 不受 build 影响，放最后更稳
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -92,6 +93,34 @@ const PATCHES = [
     needsBuild: true,
   },
   {
+    id: 'reasoning-notice',
+    title: '思考通道轮次的界面标注',
+    // 改 src/client/main.js —— 必须和源码补丁同一批、排在 build 之前。
+    // 后端那条路已验证走不通：DSH 把 replace 事件限定为只给模型看
+    // （dsh-client-ui-chat:5686-5698，`replacement copies stay model-only`），
+    // 人类转录只认 surfaceOp === "append" 的事件。所以"本轮没有正文"只能在渲染层标。
+    script: DEBUG + '/mvu-api-test/patch-reasoning-notice.mjs',
+    status() {
+      const src = APP + '/tavern-plugin/src/client/main.js'
+      let main = ''
+      try {
+        main = fs.readFileSync(src, 'utf8')
+      } catch {
+        return 'unknown'
+      }
+      const applied = main.includes('reasoningOnlyTurn') && main.includes('思考通道轮次标注')
+      const pending = main.includes('input.streaming && index === blocks.length - 1 ? "思考中…" : "思考过程"')
+      this.detail = applied
+        ? '已写入界面标注'
+        : pending
+          ? '未打补丁（本轮没有正文时不会标注）'
+          : '锚点对不上，需人工确认'
+      return applied ? 'ok' : pending ? 'need' : 'unknown'
+    },
+    apply: (s) => nodeApply(s, DATA),
+    needsBuild: true,
+  },
+  {
     id: 'workshop',
     title: '创意工坊直连域名',
     // 已并入源码补丁（patch-src.mjs 的 ⑦⑧）。不再单独往 lib/client.js 注入 ——
@@ -118,6 +147,18 @@ const PATCHES = [
     id: 'partial-body',
     title: '超时保留前台正文',
     script: DEBUG + '/mvu-api-test/patch-test.mjs',
+    status() {
+      const r = node(this.script, DATA)
+      this.detail = (r.out.split('\n').find((l) => l.includes('状态：')) || '').trim()
+      return /状态：\s*已打补丁/.test(r.out) ? 'ok' : /状态：\s*未打补丁/.test(r.out) ? 'need' : 'unknown'
+    },
+    apply: (s) => nodeApply(s, DATA),
+  },
+  {
+    id: 'reasoning-fallback',
+    title: '思考通道兜底（正文为空时用思考内容续走）',
+    script: DEBUG + '/mvu-api-test/patch-reasoning-fallback.mjs',
+    note: '改 lib/index.js，不受 build 影响',
     status() {
       const r = node(this.script, DATA)
       this.detail = (r.out.split('\n').find((l) => l.includes('状态：')) || '').trim()
@@ -182,15 +223,21 @@ console.log('开始重打…')
 console.log('')
 
 // 1) 源码补丁
-const srcPatch = PATCHES.find((p) => p.id === 'src')
+// 改 src/ 的补丁（源码补丁 + 界面标注）都要在 build 之前跑完 —— build 会整份
+// 重建 lib/client.js，跑在它前面的 src 改动才会进产物。任一项需要应用就要 build。
+const SRC_IDS = ['src', 'reasoning-notice']
+const needSrc = PATCHES.filter((p) => SRC_IDS.includes(p.id)).filter((p) => need.includes(p))
 let didBuild = false
-if (need.includes(srcPatch)) {
+if (needSrc.length) {
   console.log('① 应用源码补丁')
-  const r = srcPatch.apply(srcPatch.script)
-  console.log(r.out.split('\n').filter((l) => l.trim()).map((l) => '   ' + l).join('\n'))
-  if (r.code !== 0) {
-    console.log('   源码补丁失败，中止（后面依赖它）。')
-    process.exit(1)
+  for (const p of needSrc) {
+    console.log('   · ' + p.title)
+    const r = p.apply(p.script)
+    console.log(r.out.split('\n').filter((l) => l.trim()).map((l) => '     ' + l).join('\n'))
+    if (r.code !== 0) {
+      console.log('   源码补丁失败，中止（后面依赖它）。')
+      process.exit(1)
+    }
   }
   console.log('')
   console.log('② 重建 lib/client.js')
@@ -208,7 +255,7 @@ if (need.includes(srcPatch)) {
 let step = didBuild ? 3 : 1
 const NUMS = ['①', '②', '③', '④', '⑤', '⑥']
 for (const p of need) {
-  if (p === srcPatch) continue
+  if (needSrc.includes(p)) continue
   // 没有 apply 的项 = 已并入别处（如 workshop 并入源码补丁），只列不跑
   if (typeof p.apply !== 'function') continue
   console.log((NUMS[step - 1] || '·') + ' ' + p.title)

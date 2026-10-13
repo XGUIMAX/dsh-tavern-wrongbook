@@ -389,6 +389,12 @@ const PEER_STATE = {
     ],
   },
 }
+/* 由某个测试临时接管的 /action 应答：返回 undefined 就交回下面那套固定数据。
+ *
+ * 「记进错题库」按钮的 run 是浏览器半唯一会写数据的地方，它的两次往返只能这样
+ * 从外面看见 —— 除此之外没有别的地方能同时拿到它发出的 payload 和它的返回。 */
+let actionOverride = null
+
 const fetchStub = async (url, init) => {
   const target = String(url)
   // dsh-verify-peer：对端端点必须先判 —— 下面的 '/state' 是子串匹配，会把它抢先吃掉。
@@ -421,6 +427,10 @@ const fetchStub = async (url, init) => {
     } catch {
       body = {}
     }
+    if (actionOverride) {
+      const handled = actionOverride(body)
+      if (handled !== undefined) return { status: 200, ok: true, json: async () => handled }
+    }
     if (body.action === 'lookup') return { status: 200, ok: true, json: async () => ({ ok: true, result: LOOKUP }) }
   }
   return { status: 200, ok: true, json: async () => ({ ok: true }) }
@@ -433,7 +443,7 @@ const check = (label, ok, extra) => results.push({ label, ok, extra })
 const SRC_TEXT = fs.readFileSync(SRC, 'utf8')
 new Function('window', 'document', 'fetch', SRC_TEXT)(win, doc, fetchStub)
 check('调用了 __ModuleLoader__.load', !!captured)
-check('模块 id = dsh-wrongbook', !!captured && captured.id === 'dsh-wrongbook', captured && captured.id)
+check('模块 id = dsh-tavern-wrongbook', !!captured && captured.id === 'dsh-tavern-wrongbook', captured && captured.id)
 
 /*
  * 一次性的加载 effect 不能把"启动标志"放进依赖数组。
@@ -465,7 +475,7 @@ const plugin = captured.factory((name) => {
   if (name === 'react') return React
   throw new Error(`unexpected require: ${name}`)
 })
-check('导出 name', plugin.name === 'dsh-wrongbook', plugin.name)
+check('导出 name', plugin.name === 'dsh-tavern-wrongbook', plugin.name)
 check('inject = slots + locale', JSON.stringify(plugin.inject) === '["slots","locale"]', JSON.stringify(plugin.inject))
 
 /* apply 接线 */
@@ -655,10 +665,15 @@ const entryTextsOf = (tree) => {
   return el ? textsIn(el.type(el.props)) : []
 }
 
+/* 详情是惰性挂载的（EntryDetail）：正文不进初始渲染这件事，用整页渲染出的文本就能验。
+ * "展开之后该说的话还在"要另外把那一层渲染一遍，而多渲染一次会多消耗几个 useState
+ * 槽位（这个沙盒按调用顺序发槽位），所以那一组放到文件末尾，不干扰这里的游标。 */
+
 STATE.entries[0].stale = { kind: 'rollback', turn: 7, at: '2026-10-09T10:00:00.000Z' }
 for (const fn of effects.slice()) fn()
 await new Promise((r) => setTimeout(r, 40))
-let entryTexts = entryTextsOf(renderOnce())
+const entryTree = renderOnce()
+let entryTexts = entryTextsOf(entryTree)
 check('来源失效时打出角标', entryTexts.includes('来源已失效'), entryTexts.filter((t) => t.includes('失效')).join(' / '))
 check(
   '角标上写清是哪一轮、怎么变的',
@@ -666,11 +681,31 @@ check(
   entryTexts.filter((t) => t.includes('第 7 轮')).join(' / '),
 )
 check(
-  '详情里说了原因，并声明底稿本身没被改',
-  entryTexts.some((t) => t.includes('底稿本身一个字没改')),
+  '正文不进初始渲染（惰性挂载）',
+  !entryTexts.some((t) => t.includes('底稿本身一个字没改')),
   entryTexts.filter((t) => t.includes('没改')).join(' / '),
 )
+
+// 详情那一层的验证放在下面用源码断言做：这里多调用组件会打乱沙盒的渲染序列
+// （后面几组靠它们自己的第一次渲染取回数据）。
 check('给了「确认仍有效」的出口', entryTexts.includes('确认仍有效'), entryTexts.filter((t) => t.includes('仍有效')).join(' / '))
+
+/* 详情那一层：正文改成"点开过一次才挂"（EntryDetail）。渲染断言只能验到"整页渲染里
+ * 没有它"，展开后的样子这里用源码钉住 —— 两件事：正文确实挂在展开分支里，
+ * 而且 EntryView 自己没有第二份。 */
+check(
+  '详情：正文挂在展开分支里',
+  SRC_TEXT.includes("opened ? h('dl', { className: 'dwb-kv' }, detailRows(entry, card)) : null"),
+)
+check(
+  '详情：展开入口是 summary 的点击（toggle 不冒泡，不靠它）',
+  SRC_TEXT.includes("h('summary', { onClick: () => setOpened(true) }, t('sec.detail'))"),
+)
+check(
+  '详情：正文容器只有一处（EntryView 里没有第二份）',
+  (SRC_TEXT.match(/h\('dl', \{ className: 'dwb-kv' \}/g) || []).length === 1,
+  String((SRC_TEXT.match(/h\('dl', \{ className: 'dwb-kv' \}/g) || []).length),
+)
 
 STATE.entries[0].stale = { kind: 'regenerate', turn: 3, at: '2026-10-09T10:00:00.000Z' }
 for (const fn of effects.slice()) fn()
@@ -1048,7 +1083,7 @@ check('dsh-verify-peer：按钮上写着对端插件名', peerTexts.includes('�
 /* fix-verify-cases2 */
 /* fix-verify-cases3：定义提到使用点之前（原先在下方，前面引用会 ReferenceError） */
 const peerSrc = fs.readFileSync(SRC, "utf8")
-check('dsh-verify-peer：按钮指向对端的仓库地址', peerTexts.some((x) => String(x).includes('dsh-card-updater')), peerTexts.filter((x) => String(x).includes('github')).join(' '))
+check('dsh-verify-peer：按钮指向对端的仓库地址', peerTexts.some((x) => String(x).includes('dsh-tavern-card-updater')), peerTexts.filter((x) => String(x).includes('github')).join(' '))
 check('dsh-verify-peer：未连接时是红点 +「未连接」文案', peerTexts.includes('dwb-live err') && peerTexts.includes('未连接'), peerTexts.join(' / '))
 check('dsh-verify-peer：未连接时的 title 是引导下载那句', peerTexts.some((x) => String(x).includes('未链接到卡片更新器，请点击进行下载')), '')
 
@@ -1764,6 +1799,65 @@ check('dsh-common-update-test：没有卡装时说明无需同步', verSrc.inclu
 check('dsh-common-update-test：提示脚本自带持久状态', verSrc.includes("t('common.updateTraits')"))
 check('dsh-common-update-test：版本号变化时显示前后对比', verSrc.includes("t('common.updateVersion')"))
 
+/* ------------------------------------ 「记进错题库」按钮的 run：两次往返
+ *
+ * 这是浏览器半唯一写数据的地方：它把 captureTurn 交回的东西整理成条目底稿。
+ * 两处细节各有理由，都从外面看不出来 ——
+ *   归类键用 Tavern 给的卡位置而不是卡名：原版卡和它的 MVU 版卡名通常一模一样，
+ *   按名字会被宿主判成「对上了两个分类」而拒绝记录；
+ *   上文单独进「证据」栏而不挤「现象」：现象是当轮原文，写描述时要照着它看。
+ */
+{
+  const posted = []
+  let turnAnswer = null
+  actionOverride = (payload) => {
+    posted.push(payload)
+    if (payload.action === 'captureTurn') return { ok: true, ...turnAnswer }
+    if (payload.action === 'addEntry') {
+      return { ok: true, entry: { id: 'e_1', title: String(payload.entry && payload.entry.title) } }
+    }
+    return undefined
+  }
+
+  const captureOf = (card, before) => ({
+    turn: { gameId: 'g-1', turn: 7, textVersion: 'tv-1', text: '第七轮的正文。', card },
+    before,
+  })
+
+  turnAnswer = captureOf({ id: 'cards/雾港记事 MVU版本.json', name: '雾港记事' }, [])
+  await captureAction.run({ gameId: 'g-1', turn: 7 })
+  let add = posted.find((p) => p.action === 'addEntry')
+  check('记录的归类键用 Tavern 给的卡位置', add && add.cardKey === 'cards/雾港记事 MVU版本.json', add && add.cardKey)
+  check('没有上文时不写空的证据', add && add.entry.evidence === '', add && add.entry.evidence)
+
+  posted.length = 0
+  turnAnswer = captureOf({ id: 'cards/雾港记事 MVU版本.json', name: '雾港记事' }, [
+    { turn: 5, text: '第五轮的正文。' },
+    { turn: 6, text: '第六轮的正文。' },
+  ])
+  await captureAction.run({ gameId: 'g-1', turn: 7 })
+  add = posted.find((p) => p.action === 'addEntry')
+  check('上文进「证据」那一栏', !!add && /【上文 · 第 5 轮】/.test(add.entry.evidence), add && add.entry.evidence)
+  check('每一轮上文都带自己的轮次标题', !!add && /【上文 · 第 6 轮】/.test(add.entry.evidence))
+  check('现象里只有当轮正文', !!add && !add.entry.symptom.includes('第五轮'), add && add.entry.symptom)
+
+  // 老版本 Tavern 不给卡位置：退回卡名，至少还记得到一处
+  posted.length = 0
+  turnAnswer = captureOf({ name: '雾港记事' }, [])
+  await captureAction.run({ gameId: 'g-1', turn: 7 })
+  add = posted.find((p) => p.action === 'addEntry')
+  check('拿不到卡位置时退回卡名', add && add.cardKey === '雾港记事', add && add.cardKey)
+
+  actionOverride = null
+}
+
+/* --------------------------------------- 详情是惰性挂载的（打开面板那一下的速度）
+ *
+ * 一条底稿的正文平均 5 KB（证据那一栏还带着抓取时一并存下的上文），几百条加起来
+ * 1 MB 以上。原生 `<details>` 只是"不显示"，节点照样在 DOM 里 —— 首页渲染的开销
+ * 几乎全花在这儿。下面的验证跟主序列一起做，用的是**同一棵树**：另起一次
+ * `renderOnce()` 会把 effects 清掉，而后面几组靠它们把数据取回来。
+ */
 
 let failed = 0
 for (const r of results) {

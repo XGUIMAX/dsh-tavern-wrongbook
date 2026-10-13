@@ -31,8 +31,8 @@ fs.writeFileSync(
     {
       name: 'dsh-profile-tavern',
       private: true,
-      dependencies: { 'dsh-wrongbook': `link:${PLUGIN_DIR.replace(/\\/g, '/')}` },
-      dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', 'dsh-wrongbook'] } },
+      dependencies: { 'dsh-tavern-wrongbook': `link:${PLUGIN_DIR.replace(/\\/g, '/')}` },
+      dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', 'dsh-tavern-wrongbook'] } },
       dshTavern: {
         source: path.join(ROOT, 'apps', 'dsh-tavern'),
         managedBundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app'],
@@ -61,7 +61,7 @@ fs.writeFileSync(
 )
 let linked = false
 try {
-  fs.symlinkSync(PLUGIN_DIR, path.join(PROFILE_MODULES, 'dsh-wrongbook'), 'junction')
+  fs.symlinkSync(PLUGIN_DIR, path.join(PROFILE_MODULES, 'dsh-tavern-wrongbook'), 'junction')
   linked = true
 } catch {
   /* Windows 上建不出链接就算了，那条断言会跳过 */
@@ -86,11 +86,20 @@ const promptApi = { section: (s) => (sections.push(s), () => {}) }
  *
  * `getTurn` 读的是外面这个变量，测试里换掉它就能造各种那一轮的样子。 */
 let fakeTurn = null
+/* 往回读的那几轮、这次读的范围，以及让它失败的办法 —— 三样都由测试来换。 */
+let fakeHistory = []
+let fakeHistoryError = ''
+const historyCalls = []
 const timelineHandlers = []
 let tavernInjected = false
 const fakeTavern = {
   apiVersion: 2,
   getTurn: async () => fakeTurn,
+  getHistory: async ({ from, to }) => {
+    historyCalls.push({ from, to })
+    if (fakeHistoryError) throw new Error(fakeHistoryError)
+    return fakeHistory.filter((row) => row.turn >= from && row.turn <= to)
+  },
   onTimelineChanged: (handler) => {
     timelineHandlers.push(handler)
     return () => {
@@ -121,7 +130,7 @@ const ctx = {
 const results = []
 const check = (label, ok, extra) => results.push({ label, ok, extra })
 
-check('name 导出', mod.name === 'dsh-wrongbook', mod.name)
+check('name 导出', mod.name === 'dsh-tavern-wrongbook', mod.name)
 check('apply 是函数', typeof mod.apply === 'function')
 check(
   '声明了 tools 与 systemPrompt 注入',
@@ -152,7 +161,7 @@ check(
   'package.json 能被 JSON.parse 读回',
   (() => {
     try {
-      return JSON.parse(fs.readFileSync(path.join(PLUGIN_DIR, 'package.json'), 'utf8')).name === 'dsh-wrongbook'
+      return JSON.parse(fs.readFileSync(path.join(PLUGIN_DIR, 'package.json'), 'utf8')).name === 'dsh-tavern-wrongbook'
     } catch {
       return false
     }
@@ -649,7 +658,7 @@ check(
   broken.fix.includes('dsh.profile.bundles') && broken.fix.includes('dependencies'),
   broken.fix.split('\n').slice(-2).join(' / '),
 )
-manifest.dsh.profile.bundles = ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', 'dsh-wrongbook']
+manifest.dsh.profile.bundles = ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', 'dsh-tavern-wrongbook']
 fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), 'utf8')
 check('补回后重新判定为正常', (await state()).install.bundled === true)
 /* 自检里要能看出「磁盘上的版本」和「进程里跑的版本」是不是同一个 */
@@ -940,6 +949,71 @@ fakeTurn = {
 const cap = await action({ action: 'captureTurn', gameId: 'game-1', turn: 7 })
 check('captureTurn 交回正文', cap.ok === true && String(cap.turn.text).includes('第七轮'), cap.turn && cap.turn.text)
 check('captureTurn 交回正文版本号', cap.turn.textVersion === 'tv-1', cap.turn.textVersion)
+
+/*
+ * 上文：往回抓两轮，单独交回，让「证据」那一栏自己带上上下文。
+ *
+ * 结算漂移、状态栏连着错几轮这类问题，单看当轮说不清「从哪一轮开始不对」。但它
+ * 只是加分项 —— 读不到就不读，记录本身不能因此失败（老版本 Tavern 连这个接口都没有）。
+ */
+fakeHistory = [
+  { turn: 5, input: '继续', text: '第五轮的正文。' },
+  { turn: 6, input: '继续', text: '第六轮的正文。' },
+  { turn: 7, input: '继续', text: '第七轮的正文。' },
+]
+historyCalls.length = 0
+const withBefore = await action({ action: 'captureTurn', gameId: 'game-1', turn: 7 })
+check(
+  '往回读的范围是这一轮之前的两轮',
+  historyCalls.length === 1 && historyCalls[0].from === 5 && historyCalls[0].to === 6,
+  JSON.stringify(historyCalls),
+)
+check(
+  '上文按轮次交回',
+  Array.isArray(withBefore.before) && withBefore.before.length === 2 && withBefore.before[0].turn === 5,
+  JSON.stringify(withBefore.before),
+)
+check(
+  '上文只带正文，不带玩家输入',
+  withBefore.before[0].text === '第五轮的正文。' && withBefore.before[0].input === undefined,
+  JSON.stringify(withBefore.before[0]),
+)
+
+// 第 1 轮之前没有东西可读：连读都不去读。
+historyCalls.length = 0
+fakeTurn = { gameId: 'game-1', turn: 1, textVersion: 'tv-1', text: '开场白。', card: { id: 'cards/测试卡A.json', name: '测试卡A' } }
+const atFirst = await action({ action: 'captureTurn', gameId: 'game-1', turn: 1 })
+check('第一轮不去读上文', historyCalls.length === 0, String(historyCalls.length))
+check('第一轮的上文是空的', Array.isArray(atFirst.before) && atFirst.before.length === 0)
+
+// 读上文失败：底稿照旧，只是少一栏。
+fakeTurn = {
+  gameId: 'game-1',
+  turn: 7,
+  textVersion: 'tv-1',
+  text: '第七轮的正文，玩家在这里发现了不对劲的地方。',
+  card: { id: 'cards/测试卡A.json', name: '测试卡A' },
+}
+fakeHistoryError = '读不了'
+const brokenCapture = await action({ action: 'captureTurn', gameId: 'game-1', turn: 7 })
+check(
+  '抓不到上文也照样交回底稿',
+  brokenCapture.ok === true && String(brokenCapture.turn.text).includes('第七轮'),
+  JSON.stringify(brokenCapture),
+)
+check('失败时上文留空，不留半条', Array.isArray(brokenCapture.before) && brokenCapture.before.length === 0)
+fakeHistoryError = ''
+
+// 第 1 版的 Tavern 没有 getHistory：同样不调用、不报错。
+const savedHistory = fakeTavern.getHistory
+delete fakeTavern.getHistory
+const oldApi = await action({ action: 'captureTurn', gameId: 'game-1', turn: 7 })
+check(
+  '老版本 Tavern 上照样能记录',
+  oldApi.ok === true && Array.isArray(oldApi.before) && oldApi.before.length === 0,
+  JSON.stringify(oldApi && oldApi.before),
+)
+fakeTavern.getHistory = savedHistory
 
 const draft = await action({
   action: 'addEntry',
