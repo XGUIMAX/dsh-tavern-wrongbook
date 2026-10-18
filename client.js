@@ -185,6 +185,7 @@ window.__ModuleLoader__.load({
       'field.tags': '标签',
       'field.tags.ph': '逗号或空格分隔',
       'field.refs': '涉及',
+  'field.cardRevision': '卡版本',
       'field.refs.ph': '文件路径或字段，如 /data/extensions/regex_scripts/0',
       'field.evidence': '证据',
       'field.evidence.ph': '日志、报错原文、游玩记录引用',
@@ -562,6 +563,7 @@ window.__ModuleLoader__.load({
       'field.tags': 'Tags',
       'field.tags.ph': 'comma or space separated',
       'field.refs': 'References',
+  'field.cardRevision': 'Card revision',
       'field.refs.ph': 'file path or field, e.g. /data/extensions/regex_scripts/0',
       'field.evidence': 'Evidence',
       'field.evidence.ph': 'log, raw error, play-record reference',
@@ -1237,6 +1239,11 @@ window.__ModuleLoader__.load({
         entry.cause ? h(Fragment, null, h('dt', null, t('field.cause')), h('dd', null, entry.cause)) : null,
         entry.fix ? h(Fragment, null, h('dt', null, t('field.fix')), h('dd', null, entry.fix)) : null,
         entry.refs ? h(Fragment, null, h('dt', null, t('field.refs')), h('dd', null, entry.refs)) : null,
+        // 这条结论是对哪一版卡记的。卡后来又改过时，先看这里：版本号不同，
+        // 说明当时的毛病可能已经被改掉了，别拿旧结论去套新卡。
+        entry.source && Number.isSafeInteger(entry.source.cardRevision)
+          ? h(Fragment, null, h('dt', null, t('field.cardRevision')), h('dd', null, `r${entry.source.cardRevision}`))
+          : null,
         // 标脏的原因写在详情里：角标只说"失效了"，这里说清是哪一轮、怎么变的。
         entry.stale
           ? h(
@@ -4327,6 +4334,11 @@ const [importOpen, setImportOpen] = useState(false)
               const before = (Array.isArray(got.before) ? got.before : [])
                 .map((row) => `【上文 · 第 ${row.turn} 轮】\n${row.text}`)
                 .join('\n\n')
+              // 本轮请求上下文（Tavern 插件接口第 3 版）：哪几段真的进了这次请求、
+              // 各自多少字。和「上文」是两件事 —— 上文说前面发生了什么，这一份说
+              // 模型这一轮到底看到了什么。世界书该触发没触发时，只有它能指认。
+              const request = String(got.request || '').trim()
+              const evidence = [before, request].filter(Boolean).join('\n\n')
               // 标题先按"第几轮 + 正文开头"起一个，够在列表里认出是哪一条；现象放正文
               // 开头一段，具体描述留给面板里补 —— 记录时人在游玩，不该被要求当场把话
               // 组织好，否则就又变成"等有空再说"。
@@ -4339,12 +4351,19 @@ const [importOpen, setImportOpen] = useState(false)
                 entry: {
                   title,
                   symptom: text.slice(0, 2000),
-                  evidence: before,
+                  evidence,
                   refs: `第 ${turn} 轮 · ${gameId}`,
                   status: 'open',
                   // 出处另存一份结构化的：refs 那行是给人读的，这一份是给「来源失效」
                   // 判断用的 —— 剧情线一变，宿主拿 gameId + turn 回来对。
-                  source: { gameId, turn, textVersion: String(got.turn.textVersion || '') },
+                  // cardRevision 是抓取时这张卡的工作版版本，用来说明「这条结论是
+                  // 对哪一版卡得出的」；老版本 Tavern 不给，就不写。
+                  source: {
+                    gameId,
+                    turn,
+                    textVersion: String(got.turn.textVersion || ''),
+                    ...(Number.isSafeInteger(got.cardRevision) ? { cardRevision: got.cardRevision } : {}),
+                  },
                 },
               })
               if (!made || made.ok === false) throw new Error((made && made.error) || '写入错题库失败')

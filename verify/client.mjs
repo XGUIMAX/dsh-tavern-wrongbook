@@ -1848,6 +1848,43 @@ check('dsh-common-update-test：版本号变化时显示前后对比', verSrc.in
   add = posted.find((p) => p.action === 'addEntry')
   check('拿不到卡位置时退回卡名', add && add.cardKey === '雾港记事', add && add.cardKey)
 
+  /*
+   * 第 3 版交回的两样：本轮请求上下文、卡工作版版本号。
+   *
+   * 上下文和上文挤同一栏「证据」，但两段都要在 —— 一段说前面发生了什么，
+   * 一段说模型这一轮看到了什么，少了哪段都拼不出当时的样子。
+   */
+  posted.length = 0
+  turnAnswer = {
+    ...captureOf({ id: 'cards/雾港记事 MVU版本.json', name: '雾港记事' }, [{ turn: 6, text: '第六轮的正文。' }]),
+    request: '【本轮请求上下文】\n- [activeWorldbook] tavern:world-book · 120 字',
+    cardRevision: 12,
+  }
+  await captureAction.run({ gameId: 'g-1', turn: 7 })
+  add = posted.find((p) => p.action === 'addEntry')
+  check(
+    '请求上下文进「证据」那一栏',
+    !!add && /【本轮请求上下文】/.test(add.entry.evidence) && /tavern:world-book/.test(add.entry.evidence),
+    add && add.entry.evidence,
+  )
+  check('上文与上下文并存，不互相覆盖', !!add && /【上文 · 第 6 轮】/.test(add.entry.evidence), add && add.entry.evidence)
+  check(
+    '卡版本写进 source',
+    !!add && add.entry.source.cardRevision === 12,
+    JSON.stringify(add && add.entry.source),
+  )
+
+  // 老版本没有卡版本：source 里不该凭空多一个字段
+  posted.length = 0
+  turnAnswer = captureOf({ id: 'cards/雾港记事 MVU版本.json', name: '雾港记事' }, [])
+  await captureAction.run({ gameId: 'g-1', turn: 7 })
+  add = posted.find((p) => p.action === 'addEntry')
+  check(
+    '没有卡版本时不写这个字段',
+    !!add && !('cardRevision' in add.entry.source),
+    JSON.stringify(add && add.entry.source),
+  )
+
   actionOverride = null
 }
 

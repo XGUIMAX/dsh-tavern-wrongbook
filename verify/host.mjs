@@ -91,14 +91,37 @@ let fakeHistory = []
 let fakeHistoryError = ''
 const historyCalls = []
 const timelineHandlers = []
+/* 第 3 版的两样：这一轮请求的上下文，和卡工作版的版本号。 */
+let fakeRequest = null
+let fakeRequestError = ''
+const requestCalls = []
+let fakeCardRevision = 12
+const cardRevisionCalls = []
+const cardHandlers = []
 let tavernInjected = false
 const fakeTavern = {
-  apiVersion: 2,
+  apiVersion: 3,
   getTurn: async () => fakeTurn,
   getHistory: async ({ from, to }) => {
     historyCalls.push({ from, to })
     if (fakeHistoryError) throw new Error(fakeHistoryError)
     return fakeHistory.filter((row) => row.turn >= from && row.turn <= to)
+  },
+  getRequestContext: async ({ gameId, turn }) => {
+    requestCalls.push({ gameId, turn })
+    if (fakeRequestError) throw new Error(fakeRequestError)
+    return fakeRequest
+  },
+  cardRevision: async ({ card }) => {
+    cardRevisionCalls.push({ card })
+    return fakeCardRevision
+  },
+  onCardChanged: (handler) => {
+    cardHandlers.push(handler)
+    return () => {
+      const at = cardHandlers.indexOf(handler)
+      if (at >= 0) cardHandlers.splice(at, 1)
+    }
   },
   onTimelineChanged: (handler) => {
     timelineHandlers.push(handler)
@@ -1014,6 +1037,113 @@ check(
   JSON.stringify(oldApi && oldApi.before),
 )
 fakeTavern.getHistory = savedHistory
+
+/*
+ * 第 3 版：抓底稿时把「这一轮请求实际用掉的上下文」和卡的版本号一起带上。
+ *
+ * 两样都是给事后判断用的：世界书该触发没触发，正文里看不出来；结论是对哪一版
+ * 卡得出的，卡名也认不出。老版本 Tavern 上都没有，记录照旧能记。
+ */
+fakeRequest = {
+  turn: 7,
+  input: '我推门进去。',
+  sections: [
+    { slot: 'activeWorldbook', origin: 'tavern:world-book', text: '世界书正文'.repeat(10) },
+    { slot: 'currentStateProjection', origin: 'plugin', plugin: 'memory', name: 'recent', text: '记忆摘要' },
+  ],
+}
+requestCalls.length = 0
+const withContext = await action({ action: 'captureTurn', gameId: 'game-1', turn: 7 })
+check(
+  '第 3 版：读了这一轮的请求上下文',
+  requestCalls.length === 1 && requestCalls[0].turn === 7,
+  JSON.stringify(requestCalls),
+)
+check(
+  '上下文按段列出位置与来源',
+  /【本轮请求上下文】/.test(withContext.request) && /\[activeWorldbook\] tavern:world-book/.test(withContext.request),
+  withContext.request,
+)
+check('插件段落带上插件名与段名', /plugin:memory\/recent/.test(withContext.request), withContext.request)
+check(
+  '上下文只写字数，不搬正文',
+  !String(withContext.request).includes('世界书正文'),
+  withContext.request,
+)
+check('第 3 版：交回卡的版本号', withContext.cardRevision === 12, String(withContext.cardRevision))
+
+// 段数太多：只列前 24 段，其余说明还剩几段 —— 摘要不能变成第二个几万字的正文。
+const savedRequest = fakeRequest
+fakeRequest = {
+  turn: 7,
+  input: '',
+  sections: Array.from({ length: 30 }, () => ({ slot: 'activeWorldbook', origin: 'tavern:world-book', text: 'x' })),
+}
+const manySections = await action({ action: 'captureTurn', gameId: 'game-1', turn: 7 })
+check(
+  '段数过多时只列前 24 段并说明剩余',
+  String(manySections.request).split('\n').length === 26 && /另有 6 段/.test(manySections.request),
+  manySections.request,
+)
+fakeRequest = savedRequest
+
+// 读上下文失败：记录照旧，只是少一栏。
+fakeRequestError = '读不了'
+const brokenContext = await action({ action: 'captureTurn', gameId: 'game-1', turn: 7 })
+check(
+  '上下文读不到时照常交回底稿',
+  brokenContext.ok === true && brokenContext.request === '',
+  JSON.stringify(brokenContext.request),
+)
+fakeRequestError = ''
+
+// 第 2 版的 Tavern 没有这两个接口：两栏都空着，不报错。
+const savedRequestContext = fakeTavern.getRequestContext
+const savedCardRevisionApi = fakeTavern.cardRevision
+fakeTavern.apiVersion = 2
+delete fakeTavern.getRequestContext
+delete fakeTavern.cardRevision
+const v2Capture = await action({ action: 'captureTurn', gameId: 'game-1', turn: 7 })
+check(
+  '第 2 版 Tavern：不读上下文，底稿照旧',
+  v2Capture.ok === true && v2Capture.request === '' && v2Capture.cardRevision === null,
+  JSON.stringify({ request: v2Capture.request, revision: v2Capture.cardRevision }),
+)
+fakeTavern.getRequestContext = savedRequestContext
+fakeTavern.cardRevision = savedCardRevisionApi
+fakeTavern.apiVersion = 3
+
+// 卡版本进 source：读回来还在，非法值不写。
+const revEntry = await action({
+  action: 'addEntry',
+  cardKey: 'cards/测试卡A.json',
+  entry: { title: '带卡版本的条目', source: { gameId: 'game-1', turn: 7, cardRevision: 12 } },
+})
+check(
+  '来源里保留卡版本',
+  revEntry.entry.source && revEntry.entry.source.cardRevision === 12,
+  JSON.stringify(revEntry.entry.source),
+)
+const badRev = await action({
+  action: 'addEntry',
+  cardKey: 'cards/测试卡A.json',
+  entry: { title: '非法卡版本', source: { gameId: 'game-1', turn: 7, cardRevision: -1 } },
+})
+check(
+  '负的卡版本不写进来源',
+  badRev.entry.source && badRev.entry.source.cardRevision === undefined,
+  JSON.stringify(badRev.entry.source),
+)
+
+// 改卡通知：注册了，触发时不抛错（真正的重扫在 300ms 去抖之后，这里只钉住接线）。
+check('第 3 版：注册了改卡通知', cardHandlers.length === 1, String(cardHandlers.length))
+let cardChangeThrew = null
+try {
+  for (const handler of [...cardHandlers]) handler({ card: 'cards/测试卡A.json', revision: 3 })
+} catch (e) {
+  cardChangeThrew = e
+}
+check('改卡通知触发不抛错', cardChangeThrew === null, cardChangeThrew && cardChangeThrew.message)
 
 const draft = await action({
   action: 'addEntry',

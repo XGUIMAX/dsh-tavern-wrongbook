@@ -502,8 +502,8 @@ verify/        两套验收脚本
 ### 验收
 
 ```bash
-node verify/host.mjs      # 259 项：扫描、分组、归类、卡名解析、三段检索、卡内脚本、安装自检、skill 回流与删除、路由、工具、备份
-node verify/client.mjs    # 110 项：注册接线、字典一致性、四个页签与两个弹窗、三段渲染、禁用 API 静态检查
+node verify/host.mjs      # 317 项：扫描、分组、归类、卡名解析、三段检索、卡内脚本、安装自检、skill 回流与删除、路由、工具、备份、v3 接口
+node verify/client.mjs    # 381 项：注册接线、字典一致性、四个页签与两个弹窗、三段渲染、禁用 API 静态检查、抓取底稿
 node verify/perf.mjs      # 9 项预算：300 张卡 + 8000 条记录下量一遍最常走的几条路
 node verify/live.mjs      # 只读核对**真实数据**：错题库 ↔ 回流过的 skill 还对不对得上
 ```
@@ -521,6 +521,18 @@ git tag v1.0.1 && git push origin main --tags
 ```
 
 面板右上角的版本号读的就是 `package.json`。
+
+## Tavern 插件接口第 3 版
+
+错题库不依赖 Tavern，装了（插件接口 v3）之后「记进错题库」多两样东西，卡脚本体检也不再靠猜：
+
+- **本轮请求上下文**（`getRequestContext`）：把这一轮正文请求实际用掉的段落列进「证据」——`[activeWorldbook] tavern:world-book · 1200 字`、`[currentStateProjection] plugin:memory/recent · 300 字`。只记位置、来源和字数，不搬正文。世界书该触发没触发、插件段落没进去这类问题，正文里推不出来，这一段能直接指认。
+- **卡的版本号**（`cardRevision`）：存进条目的 `source.cardRevision`，详情里显示「卡版本 rN」。卡后来又改过时先看这里 —— 版本不同，说明当时的毛病可能已经被改掉了。
+- **改卡后自动重扫**（`onCardChanged`）：Tavern 里改完卡，这张卡的脚本盘点与卡型徽章缓存立刻作废（300 ms 去抖后重扫一次）。原来只靠「大小 + 修改时间」，而从备份恢复一份旧 mtime 的卡不会让缓存失效。
+
+Tavern 没装、或版本低于 3 时这三条都不生效：记录照旧能记，证据里只是少一栏，缓存仍按大小和修改时间判断。
+
+没有接进来的几项：`registerStatusSection` / `registerTurnView` 是游玩界面的显示层（错题库的入口是消息按钮和侧栏面板）；`cardImporter` / `saveCardPack` / `setCastImage` / 配音接口与调试台账无关；`publishState` / `watchState` 要求浏览器半接进 Tavern 的插件通道，而面板走的是自己的 HTTP 路由与轮询，换过去只多一层耦合。
 
 ## 许可
 
