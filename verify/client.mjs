@@ -1799,8 +1799,28 @@ check('dsh-common-update-test：没有卡装时说明无需同步', verSrc.inclu
 check('dsh-common-update-test：提示脚本自带持久状态', verSrc.includes("t('common.updateTraits')"))
 check('dsh-common-update-test：版本号变化时显示前后对比', verSrc.includes("t('common.updateVersion')"))
 
-/* ------------------------------------ 「记进错题库」按钮的 run：两次往返
+/* ------------------------------------ 写操作的就地更新（不再为一条记录重下 1.5 MB）
  *
+ * `/state` 带着全部条目的证据栏，288 条时约 1.5 MB。条目级的写操作后台已经把
+ * 改完的那一条交回来了，前端不该再整页重拉；会动分类表、备份列表、回流状态的
+ * 动作仍然要拉。这两条钉住的就是这个分界。
+ */
+check(
+  '写操作结果就地合并，不全页重拉',
+  SRC_TEXT.includes('if (!applyActionResult(res, payload, setData)) await load()'),
+  SRC_TEXT.includes('await load()') ? '仍有无条件 await load()' : '',
+)
+check(
+  '新建分类时仍然整页重拉（分类表不是一条记录能推出来的）',
+  SRC_TEXT.includes('if (!res.entry || res.created) return false'),
+)
+check(
+  '条目级动作覆盖：新建 / 修改 / 清标脏 / 删除',
+  ['addEntry', 'updateEntry', 'clearStale', 'deleteEntry'].every((a) => SRC_TEXT.includes(`action === '${a}'`)),
+)
+
+/* ------------------------------------ 「记进错题库」按钮的 run：两次往返
+
  * 这是浏览器半唯一写数据的地方：它把 captureTurn 交回的东西整理成条目底稿。
  * 两处细节各有理由，都从外面看不出来 ——
  *   归类键用 Tavern 给的卡位置而不是卡名：原版卡和它的 MVU 版卡名通常一模一样，
@@ -1883,6 +1903,17 @@ check('dsh-common-update-test：版本号变化时显示前后对比', verSrc.in
     '没有卡版本时不写这个字段',
     !!add && !('cardRevision' in add.entry.source),
     JSON.stringify(add && add.entry.source),
+  )
+
+  // 同一轮已经记过：按钮不再写第二份，把已有那条说出来
+  posted.length = 0
+  turnAnswer = { ok: true, duplicate: { id: 'e_9', title: '第 7 轮：第七轮的正文。' } }
+  const dupText = await captureAction.run({ gameId: 'g-1', turn: 7 })
+  check('重复抓取返回提示', typeof dupText === 'string' && /已记过/.test(dupText), dupText)
+  check(
+    '重复抓取不写条目',
+    !posted.some((p) => p.action === 'addEntry'),
+    JSON.stringify(posted.map((p) => p.action)),
   )
 
   actionOverride = null

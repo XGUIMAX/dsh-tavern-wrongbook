@@ -1,6 +1,6 @@
 {
   "name": "dsh-tavern-wrongbook",
-  "version": "1.30.0",
+  "version": "1.31.0",
   "description": "DSH Tavern 错题库：按人物卡分类记录调试中踩过的坑，调试时按「本卡 → 其它错题 → 跨卡」三段查询；并带一个跨卡共用的通用脚本库（分类、批量装卸、契合度分析）。Wrongbook for DSH Tavern: per-card defect ledger with a three-stage lookup, plus a cross-card shared-script library.",
   "type": "module",
   "main": "lib/index.js",

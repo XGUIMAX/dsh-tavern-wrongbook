@@ -1039,6 +1039,47 @@ check(
 fakeTavern.getHistory = savedHistory
 
 /*
+ * 同一局、同一轮、同一张卡再抓一次：交回已有那条，不写第二份。
+ *
+ * 消息按钮连点两下是常见事故；两条一模一样的底稿之后要各自维护，等于凭空
+ * 多出一次归类工作。判据用来源里的 gameId + turn，不靠标题。
+ */
+const t9 = await action({
+  action: 'addEntry',
+  cardKey: 'cards/测试卡A.json',
+  entry: { title: '第九轮的问题', source: { gameId: 'game-9', turn: 3 } },
+})
+fakeTurn = {
+  gameId: 'game-9',
+  turn: 3,
+  textVersion: 'tv-9',
+  text: '第九局的正文。',
+  card: { id: 'cards/测试卡A.json', name: '测试卡A' },
+}
+const dupCapture = await action({ action: 'captureTurn', gameId: 'game-9', turn: 3 })
+check(
+  '同一轮再抓一次：交回已有那条',
+  dupCapture.ok === true && !!dupCapture.duplicate && dupCapture.duplicate.id === t9.entry.id,
+  JSON.stringify(dupCapture),
+)
+check(
+  '重复抓取不读上文与上下文',
+  dupCapture.before === undefined && dupCapture.request === undefined,
+  JSON.stringify(dupCapture),
+)
+const otherTurn = await action({ action: 'captureTurn', gameId: 'game-9', turn: 4 })
+check('不同轮次不误判为重复', otherTurn.ok === true && !otherTurn.duplicate, JSON.stringify(otherTurn && otherTurn.duplicate))
+const otherGame = await action({ action: 'captureTurn', gameId: 'game-10', turn: 3 })
+check('不同局不误判为重复', otherGame.ok === true && !otherGame.duplicate, JSON.stringify(otherGame && otherGame.duplicate))
+fakeTurn = {
+  gameId: 'game-1',
+  turn: 7,
+  textVersion: 'tv-1',
+  text: '第七轮的正文，玩家在这里发现了不对劲的地方。',
+  card: { id: 'cards/测试卡A.json', name: '测试卡A' },
+}
+
+/*
  * 第 3 版：抓底稿时把「这一轮请求实际用掉的上下文」和卡的版本号一起带上。
  *
  * 两样都是给事后判断用的：世界书该触发没触发，正文里看不出来；结论是对哪一版

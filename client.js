@@ -954,6 +954,53 @@ window.__ModuleLoader__.load({
 
     const avatarUrl = (key) => `${BASE}/avatar?card=${encodeURIComponent(key)}`
 
+    /**
+     * 写操作之后能就地更新的，就别整页重拉。
+     *
+     * `/state` 现在是 1.5 MB（288 条记录，证据那一栏占一半），每记一条、每改一次
+     * 状态都重下一遍，纯属白费 —— 后端刚把改完的那一条交回来了。这里只在「这一条
+     * 的结果足以推出新列表」时动手：新建条目、改条目、删条目、清标脏。新建分类、
+     * 移动、改名、恢复备份这些会改动分类表或备份列表的动作仍然整页重拉，因为那
+     * 些不是一条记录能推出来的。
+     *
+     * 统计数字在本地按新列表重算：它只是三个状态计数，用不着为它跑一趟后台。
+     */
+    function withEntries(prev, list) {
+      const stats = {
+        ...(prev.stats || {}),
+        entries: list.length,
+        open: list.filter((e) => e.status === 'open').length,
+        watch: list.filter((e) => e.status === 'watch').length,
+        fixed: list.filter((e) => e.status === 'fixed').length,
+      }
+      // `updatedAt` 是跨卡查询那个 effect 的依赖：换了值才会带着新数据重查一次。
+      return { ...prev, entries: list, stats, updatedAt: new Date().toISOString() }
+    }
+
+    function applyActionResult(res, payload, setData) {
+      const action = payload && payload.action
+      if (!res || res.ok === false) return false
+      if (action === 'addEntry') {
+        if (!res.entry || res.created) return false
+        setData((prev) =>
+          prev ? withEntries(prev, [res.entry, ...prev.entries.filter((e) => e.id !== res.entry.id)]) : prev,
+        )
+        return true
+      }
+      if ((action === 'updateEntry' || action === 'clearStale') && res.entry) {
+        setData((prev) =>
+          prev ? withEntries(prev, prev.entries.map((e) => (e.id === res.entry.id ? res.entry : e))) : prev,
+        )
+        return true
+      }
+      if (action === 'deleteEntry') {
+        setData((prev) => (prev ? withEntries(prev, prev.entries.filter((e) => e.id !== payload.id)) : prev))
+        return true
+      }
+      return false
+    }
+
+
     /* dsh-peer-link —— 对端插件状态按钮：对方宿主半在跑就显示绿点，否则红点并可点击前往仓库下载。 */
     const PEER = {
       base: '/dsh-card-updater',
@@ -1957,7 +2004,9 @@ const [importOpen, setImportOpen] = useState(false)
               setMessage({ kind: 'ok', text: okText, hint: hint || '' })
               push(okText, 'ok')
             }
-            await load()
+            // 条目级的写操作已经把结果交回来了，就地换上；只有会动分类表、备份
+            // 列表或回流状态的动作才整页重拉。
+            if (!applyActionResult(res, payload, setData)) await load()
             return res
           } catch (e) {
             const text = String(e && e.message ? e.message : e)
@@ -4322,6 +4371,8 @@ const [importOpen, setImportOpen] = useState(false)
               const turn = Number(context && context.turn)
               const got = await apiPost({ action: 'captureTurn', gameId, turn })
               if (!got || got.ok === false) throw new Error((got && got.error) || '读不到这一轮的正文')
+              // 这一轮已经记过：不写第二份。返回一句人话，按钮的提示区会显示它。
+              if (got.duplicate) return `已记过：${got.duplicate.title}（未重复添加）`
               const text = String(got.turn.text || '').trim()
               // 归类用 Tavern 给的卡位置（`cards/x.json`），不用卡名：原版卡和它的
               // MVU 版卡名通常一模一样，按名字会被判成「对上了两个分类」而拒绝记录，
