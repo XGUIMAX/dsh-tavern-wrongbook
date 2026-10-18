@@ -1932,10 +1932,13 @@ window.__ModuleLoader__.load({
       evidence: '',
     }
 
-    function Panel() {
+    function Panel({ gameId }) {
       useStyles()
 
       const [data, setData] = useState(null)
+      // 侧栏面板带着本局 id 打开：第一次拿到分类表后自动选中本局那张卡。
+      // 用一个 ref 只做一次，之后玩家自己点别的分类不会被抢回来。
+      const autoPicked = useRef(false)
       const [busy, setBusy] = useState(false)
       const [message, setMessage] = useState(null)
       const [log, setLog] = useState([])
@@ -1982,6 +1985,27 @@ const [importOpen, setImportOpen] = useState(false)
       useEffect(() => {
         void load()
       }, [load])
+
+      /*
+       * 侧栏面板知道这一局在玩哪张卡，就别让玩家自己找。
+       *
+       * 面板是在游玩界面里点开的，人通常刚看到问题；一列卡名里挑出那一张是
+       * 纯负担。分类表到了之后问一次宿主（Tavern 的 getCard），命中就选中；
+       * 读不到、或这张卡还没进分类表，就保持面板原来的样子。
+       */
+      useEffect(() => {
+        if (!gameId || autoPicked.current || !data) return
+        autoPicked.current = true
+        void (async () => {
+          try {
+            const res = await apiPost({ action: 'gameCard', gameId })
+            const key = res && res.cardKey
+            if (key && data.cards.some((c) => c.key === key)) setSelectedKey(key)
+          } catch {
+            /* 没有本局卡就算了，面板照旧 */
+          }
+        })()
+      }, [gameId, data])
 
       /**
        * 所有写操作走这里，保证「点了必有回音」。
@@ -4432,7 +4456,8 @@ const [importOpen, setImportOpen] = useState(false)
           tavernUi.registerPanel({
             id: 'dsh-wrongbook',
             title: t('nav'),
-            render: () => h(Panel, null),
+            // gameId 交给面板，让它一打开就选中本局那张卡。
+            render: ({ gameId }) => h(Panel, { gameId }),
           })
         }
       })

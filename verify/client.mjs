@@ -562,6 +562,16 @@ check(
   !!panelEl && typeof panelEl.type === 'function' && panelEl.type.name === 'Panel',
   panelEl && panelEl.type && panelEl.type.name,
 )
+// 侧栏面板要知道这一局在玩哪张卡，才能一打开就选中它；这个 id 只能从宿主给。
+check(
+  '侧栏面板把 gameId 交给面板',
+  !!panelEl && panelEl.props && panelEl.props.gameId === 'g1',
+  panelEl && JSON.stringify(panelEl.props),
+)
+check(
+  '面板用 gameCard 定位本局卡，且只自动选一次',
+  SRC_TEXT.includes("action: 'gameCard'") && SRC_TEXT.includes('autoPicked.current'),
+)
 
 const zhKeys = Object.keys(dicts[0].dict.zh).sort()
 const enKeys = Object.keys(dicts[0].dict.en).sort()

@@ -98,10 +98,15 @@ const requestCalls = []
 let fakeCardRevision = 12
 const cardRevisionCalls = []
 const cardHandlers = []
+let fakeGameCard = { name: '测试卡A' }
 let tavernInjected = false
 const fakeTavern = {
   apiVersion: 3,
   getTurn: async () => fakeTurn,
+  getCard: async () => {
+    if (!fakeGameCard) throw new Error('这一局还没有卡')
+    return fakeGameCard
+  },
   getHistory: async ({ from, to }) => {
     historyCalls.push({ from, to })
     if (fakeHistoryError) throw new Error(fakeHistoryError)
@@ -1078,6 +1083,26 @@ fakeTurn = {
   text: '第七轮的正文，玩家在这里发现了不对劲的地方。',
   card: { id: 'cards/测试卡A.json', name: '测试卡A' },
 }
+
+/* 侧栏面板打开时自动定位本局卡：gameCard 把卡名换成错题库的分类键 */
+fakeGameCard = { name: '测试卡A' }
+const gameCard = await action({ action: 'gameCard', gameId: 'game-1' })
+check(
+  'gameCard：按本局卡名找到分类键',
+  gameCard.ok === true && gameCard.cardKey === 'cards/测试卡A.json',
+  JSON.stringify(gameCard),
+)
+check('gameCard：把卡名一并交回', gameCard.name === '测试卡A', gameCard.name)
+fakeGameCard = null
+const gameCardNone = await action({ action: 'gameCard', gameId: 'game-1' })
+check(
+  'gameCard：读不到本局卡时返回空键，不报错',
+  gameCardNone.ok === true && gameCardNone.cardKey === '',
+  JSON.stringify(gameCardNone),
+)
+const gameCardNoId = await action({ action: 'gameCard' })
+check('gameCard：没有 gameId 时直接返回空键', gameCardNoId.ok === true && gameCardNoId.cardKey === '')
+fakeGameCard = { name: '测试卡A' }
 
 /*
  * 第 3 版：抓底稿时把「这一轮请求实际用掉的上下文」和卡的版本号一起带上。
