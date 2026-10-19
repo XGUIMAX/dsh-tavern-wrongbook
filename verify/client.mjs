@@ -1482,7 +1482,11 @@ check('dsh-fit-test：路由已挂', hostSrc.includes("case 'fitCommonScript'"))
 check('dsh-fit-test：库里没有该脚本时明确报错',
   /function fitCommonScript[\s\S]{0,900}库里没有这个脚本/.test(hostSrc))
 check('dsh-fit-test：按能力规则匹配', /const RULES = \[/.test(hostSrc))
-check('dsh-fit-test：每条结果带理由', /reasons = active\.filter/.test(hostSrc))
+check('dsh-fit-test：每条结果带理由', /reasons = fit\.idle[\s\S]{0,240}active\.filter/.test(hostSrc))
+check('dsh-fit-test：空转的卡先判死，不再列通用理由', /fit\.idle\s*\?\s*\[\s*'缺正文定位标记/.test(hostSrc))
+check('dsh-fit-test：标记判据存在（cardMarkerFit）', /function cardMarkerFit\(d\)/.test(hostSrc))
+check('dsh-fit-test：堵自动测试判据存在', /function cardBlocksApiTest\(scripts, libNames\)/.test(hostSrc))
+check('dsh-fit-test：卡片统计带 fit 与 blocksApiTest', /fit: cardMarkerFit\(data\)[\s\S]{0,80}blocksApiTest: cardBlocksApiTest/.test(hostSrc))
 check('dsh-fit-test：已装的排在后面', /Number\(a\.installed\) - Number\(b\.installed\)/.test(hostSrc))
 
 check('dsh-fit-test：前端有按钮', verSrc.includes("t('common.detectFit')"))

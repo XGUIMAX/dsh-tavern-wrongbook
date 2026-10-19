@@ -81,6 +81,14 @@ window.__ModuleLoader__.load({
       'common.catAll': '全部分类（{n} 个脚本）',
       'common.tagAll': '全部卡（{n}）',
       'common.kindHand': '自带 MVU',
+      'common.fitNative': '本卡配套',
+      'common.fitPartial': '部分可用',
+      'common.fitIdle': '空转',
+      'common.fitIdleIf': '不适配',
+      'common.fitBlocks': '堵自动测试',
+      'common.fitBlocksIf': '装后只能手测',
+      'common.fitChipHint': '空转＝卡里没有脚本要读的正文标记（scene_time / now_plot），装上不会接管任何功能；堵自动测试＝卡里没有别的启用脚本，装了这个就只剩手动测。判据看卡的标记覆盖，不看它是不是 MVU 卡。',
+      'common.fitHint': '按契合度排序，每条给了理由。这是技术层面的匹配（脚本用到的能力 × 卡具备的特征），不代表题材上合不合适 —— 那种判断要读过卡才说得出来。',
       'common.tagEmpty': '没有卡装了这个脚本。',
       'common.catEmpty': '这个分类下没有脚本。',
       'common.pickAll': '全选',
@@ -103,6 +111,7 @@ window.__ModuleLoader__.load({
       'common.recommend': '建议：',
       'common.cardsTitle': '可装脚本的卡（',
       'common.cardsHint': '含 MVU 版、自带 MVU 的卡（如米吧），以及已经装过脚本的卡。只作参照的原版卡不在此列、也不提供装卸入口。徽章：已装=库里同版；版本不同=卡上那份与库里不一致（库里更新过脚本时会出现）；未装=这张卡还没有。',
+      'common.fitLine': '判据看「卡能不能产出脚本要读的标记」，不看它是不是 MVU 卡。空转的卡装了不接管任何功能；堵自动测试的卡装上之后就只剩手动测。',
       'common.scripts': '{n} 个脚本',
       'common.cardsEmpty': '没找到可装脚本的卡。',
       'common.installed': '已装',
@@ -429,6 +438,14 @@ window.__ModuleLoader__.load({
       'common.catAll': 'All categories ({n} scripts)',
       'common.tagAll': 'All cards ({n})',
       'common.kindHand': 'own MVU',
+      'common.fitNative': 'built for this card',
+      'common.fitPartial': 'partial fit',
+      'common.fitIdle': 'idle',
+      'common.fitIdleIf': 'not a fit',
+      'common.fitBlocks': 'blocks API test',
+      'common.fitBlocksIf': 'manual test only if installed',
+      'common.fitChipHint': 'Idle = the card never emits the markers this script reads (scene_time / now_plot), so it takes over nothing; blocks API test = the card has no other enabled script, so installing this leaves only manual playtesting. The check looks at marker coverage, not at whether the card is an MVU build.',
+      'common.fitLine': 'The check is marker coverage: can the card emit what the script reads. Being an MVU build says nothing. Idle cards gain no functionality; cards without other scripts lose automated API testing once this is installed.',
       'common.detectFit': 'Find suitable cards',
       'common.fitTitle': 'Cards that would benefit (',
       'common.fitClose': 'Hide',
@@ -3463,6 +3480,23 @@ const [importOpen, setImportOpen] = useState(false)
           return h('span', { className: 'dwb-chip' }, t('common.absent'))
         }
 
+        /*
+         * 卡的两条判据标签，来自后端的 cardMarkerFit / cardBlocksApiTest：
+         *   标记覆盖 → 本卡配套 / 部分可用 / 空转
+         *   装了就只剩手动测 → 堵自动测试
+         */
+        const fitChips = (c) => {
+          const fit = c.fit || null
+          const chips = []
+          /* installed 在卡列表里是数组，在检测/深度分析结果里是布尔 —— 两种都认 */
+          const on = Array.isArray(c.installed) ? c.installed.some((i) => i.state !== 'absent') : !!c.installed
+          if (fit && fit.idle) chips.push(h('span', { className: 'dwb-chip warn', key: 'idle', title: t('common.fitChipHint') }, t(on ? 'common.fitIdle' : 'common.fitIdleIf')))
+          else if (fit && fit.native) chips.push(h('span', { className: 'dwb-chip ok', key: 'native', title: t('common.fitChipHint') }, t('common.fitNative')))
+          else if (fit) chips.push(h('span', { className: 'dwb-chip', key: 'partial', title: t('common.fitChipHint') }, t('common.fitPartial')))
+          if (c.blocksApiTest) chips.push(h('span', { className: 'dwb-chip warn', key: 'blocks', title: t('common.fitChipHint') }, t(on ? 'common.fitBlocks' : 'common.fitBlocksIf')))
+          return chips.length ? chips : null
+        }
+
         const toggle = (file) => setCommonPicked((prev) => {
           const next = new Set(prev)
           if (next.has(file)) next.delete(file); else next.add(file)
@@ -3726,6 +3760,7 @@ const [importOpen, setImportOpen] = useState(false)
                       { className: 'dwb-row' },
                       h('span', { className: 'dwb-grow' }, c.label),
                       c.profile && c.profile.markerKind === 'hand-tuned-mvu' ? h('span', { className: 'dwb-chip' }, t('common.kindHand')) : null,
+                      fitChips(c),
                       c.installed ? h('span', { className: 'dwb-chip ok' }, t('common.installed')) : null,
                       c.installable === false ? null : h('button', { type: 'button', className: 'dwb-btn tiny', onClick: () => void doCommon('installCommon', { cards: [c.file] }, t('common.installOne')), disabled: commonBusy }, t('common.installOne')),
                     ),
@@ -3767,6 +3802,7 @@ const [importOpen, setImportOpen] = useState(false)
                           'div',
                           { className: 'dwb-row' },
                           h('span', { className: 'dwb-grow' }, c.label),
+                          fitChips(c),
                           c.installed ? h('span', { className: 'dwb-chip ok' }, t('common.installed')) : null,
                           c.installable ? h('button', { type: 'button', className: 'dwb-btn tiny', onClick: () => void doCommon('installCommon', { cards: [c.file] }, t('common.installOne')), disabled: commonBusy }, t('common.installOne')) : null,
                         ),
@@ -3801,6 +3837,7 @@ const [importOpen, setImportOpen] = useState(false)
                 )
               : null,
             h('div', { className: 'dwb-hint' }, t('common.cardsHint')),
+            h('div', { className: 'dwb-hint' }, t('common.fitLine')),
             shown.length
               ? h(
                   'div',
@@ -3819,6 +3856,7 @@ const [importOpen, setImportOpen] = useState(false)
                       }),
                       h('span', { className: 'dwb-grow' }, c.label),
                       c.markerKind ? h('span', { className: 'dwb-chip' }, c.markerKind === 'hand-tuned-mvu' ? t('common.kindHand') : c.markerKind) : null,
+                      fitChips(c),
                       h('span', { className: 'dwb-sub' }, t('common.scripts').replace('{n}', c.scriptCount)),
                     ),
                     h(
