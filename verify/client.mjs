@@ -1833,6 +1833,19 @@ check(
   ['addEntry', 'updateEntry', 'clearStale', 'deleteEntry'].every((a) => SRC_TEXT.includes(`action === '${a}'`)),
 )
 
+/* ------------------------------------ 跨窗口写入占用锁（Tavern 3.2 的 acquireLease）
+ *
+ * 两个面板同时改 data.json 会互相覆盖：各自读到旧表、各自写回，后写的赢，
+ * 先写的那次改动无声消失。锁只在写动作上取 —— /state 轮询与只读动作不进锁，
+ * 否则一次写入就把整页刷新卡住。旧版 Tavern 没有 acquireLease，此时必须照常写。
+ */
+check('写动作清单覆盖复制条目', SRC_TEXT.includes("'copyEntry',"))
+check('锁只在写动作上取，读动作放行', SRC_TEXT.includes('WRITE_ACTIONS.has(action)'))
+check('取锁失败不阻断写入（可选守卫）', SRC_TEXT.includes('// Optional guard: a failed acquire must not block a real write.'))
+check('被别的窗口占着时返回宿主式拒绝', SRC_TEXT.includes("e.code === 'TAVERN_PLUGIN_LEASED'") && SRC_TEXT.includes('另一个窗口正在修改错题库'))
+check('写完在 finally 里释放', SRC_TEXT.includes('lease.release()'))
+check('tavernUi 由作用域注入取得，不写进硬依赖', SRC_TEXT.includes("ctx.inject(['tavernUi']") && !/export const inject = \[[^\]]*'tavernUi'/.test(SRC_TEXT))
+
 /* ------------------------------------ 「记进错题库」按钮的 run：两次往返
 
  * 这是浏览器半唯一写数据的地方：它把 captureTurn 交回的东西整理成条目底稿。

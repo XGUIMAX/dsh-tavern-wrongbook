@@ -21,6 +21,39 @@ window.__ModuleLoader__.load({
     const NS = 'settings.dsh-wrongbook'
     const BASE = '/dsh-wrongbook'
 
+    // Tavern's browser service, kept where the request helper can reach it. Only
+    // used for the cross-window write lease below: two panels writing at once
+    // would otherwise race each other's read-modify-write on data.json, and the
+    // loser's edit disappears silently. Older Tavern builds do not expose
+    // acquireLease, and every write still works without it.
+    let tavernUiRef = null
+
+    /** Actions that change data.json. Reads and scans are deliberately left out. */
+    const WRITE_ACTIONS = new Set([
+      'addEntry',
+      'updateEntry',
+      'deleteEntry',
+      'copyEntry',
+      'addBucket',
+      'deleteBucket',
+      'renameCard',
+      'importEntries',
+      'clearStale',
+      'restoreBackup',
+      'deleteBackup',
+      'backupNow',
+      'setBackupDir',
+      'setAutoReflux',
+      'createSkill',
+      'deleteSkill',
+      'refluxToSkill',
+      'importCommonScript',
+      'updateCommonScript',
+      'deleteCommonScript',
+      'fitCommonScript',
+      'pruneBackups',
+    ])
+
     let translate = (key) => key
     const t = (key) => {
       try {
@@ -959,6 +992,45 @@ window.__ModuleLoader__.load({
     }
 
     async function apiPost(payload) {
+      const action = payload && typeof payload.action === 'string' ? payload.action : ''
+      const ui = tavernUiRef
+      // Only writes take the lease. A read does not touch data.json, and making
+      // every /state poll queue behind a lock would be worse than the race it
+      // prevents.
+      const guarded = action !== '' && WRITE_ACTIONS.has(action) && ui && typeof ui.acquireLease === 'function'
+      if (!guarded) return postOnce(payload)
+      let lease = null
+      try {
+        lease = await ui.acquireLease({
+          sessionId: 'wrongbook',
+          scope: 'wrongbook/write',
+          // A single write is fast; this only has to outlive a stuck request.
+          ttlMs: 30000,
+          reason: '错题库写入',
+        })
+      } catch (e) {
+        if (e && e.code === 'TAVERN_PLUGIN_LEASED') {
+          // Report it the same shape as a host refusal, so every caller's
+          // existing error path shows the sentence instead of silently doing
+          // nothing.
+          return { ok: false, error: `另一个窗口正在修改错题库（${(e && e.holder) || '未知'}），稍后再试。` }
+        }
+        // Optional guard: a failed acquire must not block a real write.
+      }
+      try {
+        return await postOnce(payload)
+      } finally {
+        if (lease && typeof lease.release === 'function') {
+          try {
+            lease.release()
+          } catch {
+            /* expired or already released */
+          }
+        }
+      }
+    }
+
+    async function postOnce(payload) {
       const res = await fetch(`${BASE}/action`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -4423,6 +4495,9 @@ const [importOpen, setImportOpen] = useState(false)
       if (typeof ctx.inject === 'function') ctx.inject(['tavernUi'], (scoped) => {
         const tavernUi = scoped && scoped.tavernUi
         if (!tavernUi) return
+        // Hand it to the request helper before any capability check can return:
+        // the write lease is optional and must not depend on the panel half.
+        tavernUiRef = tavernUi
 
         if (typeof tavernUi.registerMessageAction === 'function') {
           tavernUi.registerMessageAction({
