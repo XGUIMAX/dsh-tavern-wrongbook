@@ -176,6 +176,7 @@ window.__ModuleLoader__.load({
       'ok.patchCheck': '检查完成，见下方输出',
       'ok.patchApply': '已重打，重启 DSH 后生效',
       'ok.patchNone': '全部就位，无需重打',
+      'ok.patchRetired': '这套宿主补丁已退休：Tavern 已内置同一能力，无需再打',
       'err.patch': '重打失败',
       'btn.patchCheck': '检查补丁状态',
       'btn.patchApply': '重打补丁',
@@ -562,6 +563,7 @@ window.__ModuleLoader__.load({
       'ok.patchCheck': 'Check finished, see output below',
       'ok.patchApply': 'Reapplied, effective after restarting DSH',
       'ok.patchNone': 'All in place, nothing to reapply',
+      'ok.patchRetired': 'These host patches are retired: Tavern now ships the same capability',
       'err.patch': 'Reapply failed',
       'btn.patchCheck': 'Check patches',
       'btn.patchApply': 'Reapply patches',
@@ -2827,7 +2829,10 @@ const [importOpen, setImportOpen] = useState(false)
             const out = String(payload.output || payload.error || '（无输出）')
             setPatchOut(out)
             if (payload.auto) setPatchAuto(payload.auto)
-            if (!payload.ok) {
+            if (payload.retired) {
+              // 补丁脚本已退休（Tavern 3.2.0 内置了同一能力）—— 这不是错误，别报红。
+              setMessage({ kind: 'ok', text: t('ok.patchRetired') })
+            } else if (!payload.ok) {
               setMessage({ kind: 'err', text: t('err.patch') + '：' + String(payload.error || '') })
             } else if (!apply) {
               setMessage({ kind: 'ok', text: t('ok.patchCheck') })
